@@ -1,0 +1,10 @@
+# Secrets
+.env
+
+# Personal meter data and generated reports
+data/
+output/
+
+__pycache__/
+*.pyc
+.venv/

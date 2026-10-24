@@ -1,0 +1,22 @@
+# Tariff and battery settings. Times are UK local clock time (BST in summer, GMT in winter).
+# Fill in every value marked "FILL IN" before running.
+
+[tariff]
+name = ""                  # FILL IN, e.g. "Intelligent Octopus Go"
+# One or more off-peak windows as ["HH:MM", "HH:MM"]. Windows may cross midnight.
+offpeak_windows = []       # FILL IN, e.g. [["23:30", "05:30"]]
+offpeak_rate_p = 0.0       # FILL IN, p/kWh
+peak_rate_p = 0.0          # FILL IN, p/kWh (everything outside the off-peak windows)
+export_rate_p = 0.0        # FILL IN, p/kWh
+
+[battery]
+existing_kwh = 10.76       # 2 x BAT 5.0
+inverter_kw = 6.0          # SigenStor EC 6.0 SP charge/discharge limit
+round_trip_efficiency = 0.9
+module_kwh = 5.0           # capacity added per extra module
+module_cost_gbp = 0.0      # FILL IN, installed cost of one extra module
+scenarios_kwh = [5, 8, 10]
+
+[analysis]
+months = 12
+capped_halfhour_kwh = 3.0  # half-hour import above this (> 6 kW average) is flagged as power-capped
