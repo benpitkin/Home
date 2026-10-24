@@ -69,9 +69,10 @@ class _ApiError(Exception):
 
 
 class SigenClient:
-    def __init__(self, username, password, region="eu"):
+    def __init__(self, username, password, region="eu", app_key="", app_secret=""):
         self.base = REGIONS[region]
         self.username, self.password = username, password
+        self.app_key, self.app_secret = app_key, app_secret
         self.s = requests.Session()
         self.app_token = None   # token for the app endpoints (station lookup)
         self.nb_token = None    # token for the /openapi endpoints (history)
@@ -86,6 +87,12 @@ class SigenClient:
         self.app_token = _unwrap(resp, "app login")["access_token"]
 
     def _nb_login(self):
+        if self.app_key and self.app_secret:
+            # Official developer-portal credentials.
+            key = base64.b64encode(f"{self.app_key}:{self.app_secret}".encode()).decode()
+            resp = self.s.post(f"{self.base}/openapi/auth/login/key", json={"key": key}, timeout=30)
+            self.nb_token = _unwrap(resp, "AppKey login")["accessToken"]
+            return
         resp = self.s.post(f"{self.base}/openapi/auth/login/password",
                            json={"username": self.username, "password": _encrypt(self.password)}, timeout=30)
         self.nb_token = _unwrap(resp, "openapi login")["accessToken"]
@@ -111,10 +118,15 @@ def fetch(days, cache_dir, out_path, pause=1.0):
     """Download each day's 5-minute history, caching one JSON file per day so reruns resume."""
     load_dotenv()
     user, pwd = os.getenv("SIGEN_USERNAME", "").strip(), os.getenv("SIGEN_PASSWORD", "")
-    if not user or not pwd:
-        raise SystemExit("Set SIGEN_USERNAME and SIGEN_PASSWORD (in .env or the environment) to fetch Sigen data.")
-    client = SigenClient(user, pwd, os.getenv("SIGEN_REGION", "eu").strip() or "eu")
-    code = os.getenv("SIGEN_STATION_CODE", "").strip() or client.station_code()
+    app_key, app_secret = os.getenv("SIGEN_APP_KEY", "").strip(), os.getenv("SIGEN_APP_SECRET", "").strip()
+    code = os.getenv("SIGEN_STATION_CODE", "").strip()
+    if not (app_key and app_secret) and not (user and pwd):
+        raise SystemExit("Set SIGEN_APP_KEY + SIGEN_APP_SECRET, or SIGEN_USERNAME + SIGEN_PASSWORD, to fetch Sigen data.")
+    if not code and not (user and pwd):
+        raise SystemExit("With an AppKey, also set SIGEN_STATION_CODE (your system ID), or add SIGEN_USERNAME/PASSWORD "
+                         "so it can be looked up.")
+    client = SigenClient(user, pwd, os.getenv("SIGEN_REGION", "eu").strip() or "eu", app_key, app_secret)
+    code = code or client.station_code()
     print(f"Sigen station {code}: fetching {len(days)} days of 5-minute history ...")
 
     cache_dir.mkdir(parents=True, exist_ok=True)

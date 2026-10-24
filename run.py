@@ -23,7 +23,7 @@ OUT = ROOT / "output"
 def add_battery_data(hh, fetch_new):
     """Join Sigen battery history if a login is configured or a saved copy exists."""
     load_dotenv()
-    if fetch_new and os.getenv("SIGEN_USERNAME"):
+    if fetch_new and (os.getenv("SIGEN_USERNAME") or os.getenv("SIGEN_APP_KEY")):
         days = sorted({f"{d:%Y-%m-%d}" for d in hh.index.tz_localize(None).normalize()})
         sig = sigen.fetch(days, SIGEN_CACHE, SIGEN_DATA)
     elif SIGEN_DATA.exists():
