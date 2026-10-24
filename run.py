@@ -41,6 +41,13 @@ def main():
     if partial.any():
         print(f"Skipping {int(partial.sum())} incomplete day(s) (missing half-hours).")
     daily = daily[~partial]
+    # Days on a single-rate tariff have no peak window, so there's nothing to shift.
+    # Leaving them in would dilute the annual figures, so analyse time-of-use days only.
+    flat = daily["offpeak_hours"] * 2 >= daily["halfhours"]
+    if flat.any() and not flat.all():
+        print(f"Skipping {int(flat.sum())} day(s) on a single-rate tariff "
+              f"(up to {daily.index[flat].max():%d %b %Y}); annual figures are scaled from the rest.")
+        daily = daily[~flat]
 
     sim, value_grid, value_solar = analyse.simulate(daily, cfg)
     monthly = analyse.monthly_table(sim, cfg)
