@@ -1,8 +1,8 @@
-"""Download 5-minute battery history from Sigen Cloud (the API the mySigen app uses).
+"""Download 5-minute battery history from the Sigen Cloud OpenAPI.
 
-There is no official public documentation for this API. Endpoints and the password
-encryption follow community clients (e.g. github.com/paulczar/sigen-mcp), so expect
-it to change without notice.
+Logs in with developer-portal AppKey/AppSecret, or with the mySigen app login. Endpoints
+follow community clients (e.g. github.com/schwarzbr0t/sigenergy-ha); Sigenergy's own docs
+are behind the developer portal, so expect changes without notice.
 """
 
 import base64
@@ -12,8 +12,6 @@ import time
 
 import pandas as pd
 import requests
-from cryptography.hazmat.primitives import padding
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from dotenv import load_dotenv
 
 UK = "Europe/London"
@@ -24,8 +22,6 @@ REGIONS = {
     "us": "https://api-us.sigencloud.com",
     "cn": "https://api-cn.sigencloud.com",
 }
-# The app encrypts the password with this fixed AES key/IV before sending it.
-_AES_KEY = b"sigensigensigenp"
 FIELDS = {
     "batSoc": "soc_pct",
     "esChargePower": "charge_kw",
@@ -35,13 +31,6 @@ FIELDS = {
     "fromGridPower": "from_grid_kw",
     "toGridPower": "to_grid_kw",
 }
-
-
-def _encrypt(password):
-    padder = padding.PKCS7(128).padder()
-    data = padder.update(password.encode()) + padder.finalize()
-    enc = Cipher(algorithms.AES(_AES_KEY), modes.CBC(_AES_KEY)).encryptor()
-    return base64.b64encode(enc.update(data) + enc.finalize()).decode()
 
 
 def _unwrap(resp, what):
@@ -54,7 +43,11 @@ def _unwrap(resp, what):
     if body.get("code") not in (None, 0):
         raise _ApiError(body.get("code"), body.get("msg"), what)
     data = body.get("data")
-    # Some endpoints wrap the payload as a JSON string.
+    return _maybe_json(data)
+
+
+def _maybe_json(data):
+    # Some endpoints wrap the payload (and fields inside it) as a JSON string.
     return json.loads(data) if isinstance(data, str) and data[:1] in "{[" else data
 
 
@@ -74,44 +67,46 @@ class SigenClient:
         self.username, self.password = username, password
         self.app_key, self.app_secret = app_key, app_secret
         self.s = requests.Session()
-        self.app_token = None   # token for the app endpoints (station lookup)
-        self.nb_token = None    # token for the /openapi endpoints (history)
+        self.token = None
 
-    def _app_login(self):
-        resp = self.s.post(
-            f"{self.base}/auth/oauth/token",
-            headers={"Authorization": "Basic " + base64.b64encode(b"sigen:sigen").decode()},
-            data={"username": self.username, "password": _encrypt(self.password), "grant_type": "password"},
-            timeout=30,
-        )
-        self.app_token = _unwrap(resp, "app login")["access_token"]
+    def _login(self):
+        # Sigen allows one login per second; back off briefly if asked to.
+        for attempt in range(3):
+            try:
+                return self._login_once()
+            except _ApiError as e:
+                if e.code != 2028 or attempt == 2:
+                    raise
+                time.sleep(2)
 
-    def _nb_login(self):
+    def _login_once(self):
         if self.app_key and self.app_secret:
             # Official developer-portal credentials.
             key = base64.b64encode(f"{self.app_key}:{self.app_secret}".encode()).decode()
             resp = self.s.post(f"{self.base}/openapi/auth/login/key", json={"key": key}, timeout=30)
-            self.nb_token = _unwrap(resp, "AppKey login")["accessToken"]
-            return
-        resp = self.s.post(f"{self.base}/openapi/auth/login/password",
-                           json={"username": self.username, "password": _encrypt(self.password)}, timeout=30)
-        self.nb_token = _unwrap(resp, "openapi login")["accessToken"]
+        else:
+            resp = self.s.post(f"{self.base}/openapi/auth/login/password",
+                               json={"username": self.username, "password": self.password}, timeout=30)
+        self.token = _unwrap(resp, "login")["accessToken"]
+
+    def _get(self, path, params, what):
+        if not self.token:
+            self._login()
+        resp = self.s.get(f"{self.base}{path}", params=params,
+                          headers={"Authorization": f"Bearer {self.token}"}, timeout=60)
+        return _unwrap(resp, what)
 
     def station_code(self):
-        if not self.app_token:
-            self._app_login()
-        resp = self.s.get(f"{self.base}/device/owner/station/home",
-                          headers={"Authorization": f"Bearer {self.app_token}"}, timeout=30)
-        data = _unwrap(resp, "station lookup")
-        return str(data.get("stationCode") or data["stationId"])
+        systems = self._get("/openapi/system", None, "system list") or []
+        if not systems:
+            raise SystemExit("Sigen returned no systems for this login.")
+        return str(systems[0]["systemId"])
 
     def history(self, code, day):
-        if not self.nb_token:
-            self._nb_login()
-        resp = self.s.get(f"{self.base}/openapi/systems/{code}/history",
-                          params={"date": day, "level": "day"},
-                          headers={"Authorization": f"Bearer {self.nb_token}"}, timeout=60)
-        return _unwrap(resp, f"history {day}")
+        data = self._get(f"/openapi/systems/{code}/history",
+                         {"systemId": code, "level": "day", "date": day}, f"history {day}") or {}
+        data["itemList"] = _maybe_json(data.get("itemList")) or []
+        return data
 
 
 def fetch(days, cache_dir, out_path, pause=1.0):
@@ -122,9 +117,6 @@ def fetch(days, cache_dir, out_path, pause=1.0):
     code = os.getenv("SIGEN_STATION_CODE", "").strip()
     if not (app_key and app_secret) and not (user and pwd):
         raise SystemExit("Set SIGEN_APP_KEY + SIGEN_APP_SECRET, or SIGEN_USERNAME + SIGEN_PASSWORD, to fetch Sigen data.")
-    if not code and not (user and pwd):
-        raise SystemExit("With an AppKey, also set SIGEN_STATION_CODE (your system ID), or add SIGEN_USERNAME/PASSWORD "
-                         "so it can be looked up.")
     client = SigenClient(user, pwd, os.getenv("SIGEN_REGION", "eu").strip() or "eu", app_key, app_secret)
     code = code or client.station_code()
     print(f"Sigen station {code}: fetching {len(days)} days of 5-minute history ...")
@@ -169,9 +161,12 @@ def build_csv(cache_dir, out_path):
         raise SystemExit("Sigen returned no history.")
     df = pd.DataFrame(rows)
     df = df[["dataTime"] + [k for k in FIELDS if k in df]].rename(columns=FIELDS)
-    # dataTime is local wall-clock time; the repeated October hour is resolved by order.
-    t = pd.to_datetime(df.pop("dataTime"))
-    df.index = t.dt.tz_localize(UK, ambiguous="infer", nonexistent="NaT")
+    # dataTime is UK wall-clock time, e.g. "20260115 18:05".
+    t = pd.to_datetime(df.pop("dataTime"), format="mixed")
+    try:  # the repeated October hour, resolved by order where both copies are present
+        df.index = t.dt.tz_localize(UK, ambiguous="infer", nonexistent="NaT")
+    except Exception:
+        df.index = t.dt.tz_localize(UK, ambiguous="NaT", nonexistent="NaT")
     df = df[df.index.notna()].sort_index()
     df = df[~df.index.duplicated()].apply(pd.to_numeric, errors="coerce")
     df.index.name = "time"
