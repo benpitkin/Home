@@ -22,7 +22,8 @@ def main():
     args = parser.parse_args()
 
     cfg = tomllib.loads(args.config.read_text())
-    analyse.check_config(cfg)  # fail fast, before spending time on the API
+    if not cfg["battery"].get("module_cost_gbp"):  # fail fast, before spending time on the API
+        raise SystemExit("Set module_cost_gbp in config.toml first.")
 
     if args.no_fetch:
         if not DATA.exists():
@@ -31,6 +32,7 @@ def main():
     else:
         hh = fetch.fetch(DATA, months=cfg["analysis"]["months"])
 
+    analyse.check_config(cfg, hh)
     hh = analyse.tag_halfhours(hh, cfg)
     daily = analyse.daily_totals(hh, cfg)
     # Drop part days at either end (e.g. a cycle that starts at 23:30 on the last day).
@@ -52,12 +54,14 @@ def main():
     monthly.to_csv(OUT / "monthly_summary.csv", float_format="%.3f")
     annual.to_csv(OUT / "annual_summary.csv", float_format="%.2f")
     report.chart(sim, cfg, OUT / "daily_peak_import.png")
-    summary = report.format_summary(monthly, annual, lines, cfg, sim)
+    windows = analyse.offpeak_windows(hh)
+    report.dashboard(sim, annual, lines, cfg, windows, OUT / "dashboard.html")
+    summary = report.format_summary(monthly, annual, lines, cfg, sim, windows)
     (OUT / "summary.txt").write_text(summary + "\n")
 
     print()
     print(summary)
-    print(f"\nFiles written to {OUT}/")
+    print(f"\nFiles written to {OUT}/ — open {OUT / 'dashboard.html'} in a browser to explore.")
 
 
 if __name__ == "__main__":

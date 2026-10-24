@@ -7,13 +7,23 @@ whether adding battery capacity (+5, +8, +10 kWh) to the SigenStor system pays f
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env        # add your API key, MPANs and meter serial
-# edit config.toml: tariff times/rates and the module cost
+cp .env.example .env        # add your API key and account number
+# edit config.toml: set module_cost_gbp
 python run.py               # fetch + analyse
 python run.py --no-fetch    # re-analyse the saved CSV without calling the API
 ```
 
-Outputs go to `output/` (`summary.txt`, `monthly_summary.csv`, `annual_summary.csv`,
+With `ACCOUNT_NUMBER` set, the script reads your MPANs, meter serials and tariff history from
+the Octopus account and fetches the actual unit rate for every half-hour, including price changes
+and tariff switches. Off-peak is then any half-hour within 0.5p of that day's cheapest rate. Without
+it, set the MPANs/serial in `.env` and the tariff in `config.toml`.
+
+Open `output/dashboard.html` in a browser for the interactive version. Drag the capacity
+slider, change the module cost or try different rates, and the savings, payback and charts
+recalculate. It's a single offline file with your data embedded and Chart.js inlined from
+`battery/vendor/`, so treat it as private.
+
+Outputs go to `output/` (`dashboard.html`, `summary.txt`, `monthly_summary.csv`, `annual_summary.csv`,
 `daily_analysis.csv`, `capped_halfhours.csv`, `daily_peak_import.png`). Raw data is saved to
 `data/octopus_halfhourly.csv`. `.env`, `data/` and `output/` are git-ignored.
 
@@ -31,6 +41,7 @@ Outputs go to `output/` (`summary.txt`, `monthly_summary.csv`, `annual_summary.c
   covered however big the battery is. Half-hours importing more than 3 kWh are flagged.
 - **Shifted kWh per day** = `min(extra capacity, shiftable peak import)`, also capped by what 6 kW
   can recharge in the off-peak window after refilling the existing 10.76 kWh.
+- **Rates:** valued day by day using that day's rates (peak weighted by when you imported).
 - **Value per kWh shifted:** grid-charged = `peak − off-peak ÷ 0.9`; solar-charged =
   `peak − export ÷ 0.9`, limited to that day's exported kWh × 0.9. The cheaper source is used
   first. With normal Octopus rates (export above off-peak), grid charging wins and solar only tops up.
@@ -43,3 +54,7 @@ Octopus data shows only net grid flows, not battery state. So the model can't te
 was empty from one that was already discharging at full power, and it treats every sub-6 kW peak
 import as coverable. Savings are therefore an upper bound. It also assumes the battery may
 discharge into the Tesla. If your setup blocks that, peak-time car charging isn't really shiftable.
+
+On Intelligent Octopus Go, extra smart-charge slots outside the off-peak window are billed at the
+off-peak rate. The REST API doesn't expose them, so car charging in those slots is counted as
+peak here. That overstates both peak import and the savings.

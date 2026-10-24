@@ -10,11 +10,23 @@ def _minutes(hhmm):
     return int(h) * 60 + int(m)
 
 
-def check_config(cfg):
+def has_rates(df):
+    return "import_rate_p" in df and df["import_rate_p"].notna().mean() > 0.9
+
+
+def check_config(cfg, df=None):
+    """Exit with a clear message if the tariff or module cost still needs filling in.
+
+    Tariff values are only required when the data has no rates from the Octopus account.
+    """
     t, b = cfg["tariff"], cfg["battery"]
-    missing = [k for k in ("offpeak_rate_p", "peak_rate_p", "export_rate_p") if not t.get(k)]
-    if not t.get("offpeak_windows"):
-        missing.append("offpeak_windows")
+    missing = []
+    if df is None or not has_rates(df):
+        missing = [k for k in ("offpeak_rate_p", "peak_rate_p") if not t.get(k)]
+        if not t.get("offpeak_windows"):
+            missing.append("offpeak_windows")
+    if (df is None or "export_rate_p" not in df) and not t.get("export_rate_p"):
+        missing.append("export_rate_p")
     if not b.get("module_cost_gbp"):
         missing.append("module_cost_gbp")
     if missing:
@@ -22,31 +34,60 @@ def check_config(cfg):
 
 
 def tag_halfhours(df, cfg):
-    """Add is_offpeak, and battery_day: the day each half-hour belongs to.
+    """Add is_offpeak, the rate columns, and battery_day: the day each half-hour belongs to.
+
+    With rates from the Octopus account, a half-hour is off-peak when its rate is within
+    0.5p of that day's cheapest rate; otherwise the config windows are used.
 
     If the off-peak window starts in the evening (e.g. 23:30), the cycle "charge
     overnight, discharge through the following day" is labelled with the date of
     the following day, so each day's off-peak charge precedes its peak usage.
     """
-    windows = [(_minutes(a), _minutes(b)) for a, b in cfg["tariff"]["offpeak_windows"]]
+    t = cfg["tariff"]
     # Wall-clock time in the UK, so 23:30 means 23:30 in both GMT and BST.
     local = df.index.tz_localize(None)
-    mins = local.hour * 60 + local.minute
-
-    offpeak = pd.Series(False, index=df.index)
-    for start, end in windows:
-        if start < end:
-            offpeak |= (mins >= start) & (mins < end)
-        else:  # window crosses midnight
-            offpeak |= (mins >= start) | (mins < end)
-
-    first_start = windows[0][0]
-    shift = pd.Timedelta(minutes=24 * 60 - first_start) if first_start >= 12 * 60 else pd.Timedelta(0)
-
+    mins = pd.Series(local.hour * 60 + local.minute, index=df.index)
     out = df.copy()
+
+    if has_rates(df):
+        rate = df["import_rate_p"].ffill().bfill()
+        day_min = rate.groupby(local.normalize()).transform("min")
+        offpeak = rate <= day_min + 0.5
+        out["import_rate_p"] = rate
+        # Off-peak start = the most common clock time at which a cheap run begins.
+        starts = mins[offpeak & ~offpeak.shift(1, fill_value=True)]
+        first_start = int(starts.mode().iloc[0]) if len(starts) else 0
+    else:
+        windows = [(_minutes(a), _minutes(b)) for a, b in t["offpeak_windows"]]
+        offpeak = pd.Series(False, index=df.index)
+        for start, end in windows:
+            if start < end:
+                offpeak |= (mins >= start) & (mins < end)
+            else:  # window crosses midnight
+                offpeak |= (mins >= start) | (mins < end)
+        out["import_rate_p"] = (offpeak.map({True: t["offpeak_rate_p"], False: t["peak_rate_p"]})).astype(float)
+        first_start = windows[0][0]
+
+    if "export_rate_p" in df and df["export_rate_p"].notna().any():
+        out["export_rate_p"] = df["export_rate_p"].ffill().bfill()
+    else:
+        out["export_rate_p"] = float(t["export_rate_p"])
+
+    shift = pd.Timedelta(minutes=24 * 60 - first_start) if first_start >= 12 * 60 else pd.Timedelta(0)
     out["is_offpeak"] = offpeak.values
     out["battery_day"] = (local + shift).normalize()
     return out
+
+
+def offpeak_windows(hh):
+    """Describe the off-peak windows actually seen, e.g. ['23:30-05:30'], for the report."""
+    local = hh.index.tz_localize(None)
+    mins = pd.Series(local.hour * 60 + local.minute, index=hh.index)
+    op = hh["is_offpeak"]
+    starts = mins[op & ~op.shift(1, fill_value=True)].mode()
+    ends = mins[~op & op.shift(1, fill_value=False)].mode()
+    fmt = lambda m: f"{int(m) // 60:02d}:{int(m) % 60:02d}"  # noqa: E731
+    return [f"{fmt(a)}–{fmt(b)}" for a, b in zip(starts, ends)]
 
 
 def daily_totals(hh, cfg):
@@ -68,22 +109,32 @@ def daily_totals(hh, cfg):
         "offpeak_hours": (~peak).astype(float) * 0.5,
         "halfhours": 1,
     })
-    daily = parts.groupby(hh["battery_day"]).sum()
+    key = hh["battery_day"]
+    daily = parts.groupby(key).sum()
+    # The day's rates. Peak is weighted by the import a battery could displace, so it
+    # reflects the price actually avoided on tariffs with more than two rates.
+    r = hh["import_rate_p"]
+    w = parts["peak_shiftable_kwh"]
+    peak_simple = r.where(peak).groupby(key).mean()
+    peak_weighted = (r * w).groupby(key).sum() / w.groupby(key).sum()
+    daily["peak_rate_p"] = peak_weighted.fillna(peak_simple).fillna(r.groupby(key).max())
+    daily["offpeak_rate_p"] = r.where(~peak).groupby(key).mean().fillna(r.groupby(key).min())
+    daily["export_rate_p"] = hh["export_rate_p"].groupby(key).mean()
     daily.index.name = "day"
     return daily
 
 
 def simulate(daily, cfg):
     """Add shifted kWh and £ saved columns for each extra-capacity scenario."""
-    t, b = cfg["tariff"], cfg["battery"]
+    b = cfg["battery"]
     eff = b["round_trip_efficiency"]
-    peak, offpeak, export = t["peak_rate_p"], t["offpeak_rate_p"], t["export_rate_p"]
+    peak, offpeak, export = daily["peak_rate_p"], daily["offpeak_rate_p"], daily["export_rate_p"]
 
-    # Value of each kWh delivered from the extra capacity during peak (p/kWh).
+    # Value of each kWh delivered from the extra capacity during peak (p/kWh), per day.
     # Storing 1 kWh costs the input energy, and only `eff` of it comes back out,
     # so both sources are divided by efficiency.
-    value_grid = max(peak - offpeak / eff, 0.0)
-    value_solar = max(peak - export / eff, 0.0)
+    value_grid = (peak - offpeak / eff).clip(lower=0.0)
+    value_solar = (peak - export / eff).clip(lower=0.0)
     solar_first = value_solar > value_grid
 
     # Energy the inverter can put into the extra capacity off-peak, after recharging
@@ -93,19 +144,23 @@ def simulate(daily, cfg):
     solar_room = daily["export_kwh"] * eff
 
     out = daily.copy()
+    out["value_grid_p"] = value_grid
+    out["value_solar_p"] = value_solar
     for kwh in b["scenarios_kwh"]:
         shift = daily["peak_shiftable_kwh"].clip(upper=kwh)
-        if solar_first:
-            solar = pd.concat([shift, solar_room], axis=1).min(axis=1)
-            grid = pd.concat([shift - solar, grid_room], axis=1).min(axis=1)
-        else:
-            grid = pd.concat([shift, grid_room], axis=1).min(axis=1)
-            solar = pd.concat([shift - grid, solar_room], axis=1).min(axis=1)
+        g1 = pd.concat([shift, grid_room], axis=1).min(axis=1)
+        s1 = pd.concat([shift - g1, solar_room], axis=1).min(axis=1)
+        s2 = pd.concat([shift, solar_room], axis=1).min(axis=1)
+        g2 = pd.concat([shift - s2, grid_room], axis=1).min(axis=1)
+        grid = g2.where(solar_first, g1)
+        solar = s2.where(solar_first, s1)
         out[f"grid_shift_{kwh}"] = grid
         out[f"solar_shift_{kwh}"] = solar
         out[f"shifted_{kwh}"] = grid + solar
         out[f"saving_gbp_{kwh}"] = (grid * value_grid + solar * value_solar) / 100
-    return out, value_grid, value_solar
+    # Import-weighted average values, for the report.
+    w = daily["peak_shiftable_kwh"].where(daily["peak_shiftable_kwh"] > 0, 1e-9)
+    return out, float((value_grid * w).sum() / w.sum()), float((value_solar * w).sum() / w.sum())
 
 
 def monthly_table(sim, cfg):

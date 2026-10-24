@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Battery Expansion Dashboard</title>
+<script>/*CHARTJS*/</script>
+<style>
+  :root {
+    color-scheme: light;
+    --surface-0: #f4f3f0; --surface-1: #fcfcfb; --border: #e6e5e1;
+    --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #8a8984;
+    --series-1: #2a78d6; --series-2: #eb6834; --grid: #ecebe7; --accent: #2a78d6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface-0: #111110; --surface-1: #1a1a19; --border: #2e2d2b;
+      --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #8f8e88;
+      --series-1: #3987e5; --series-2: #d95926; --grid: #2a2a28; --accent: #3987e5;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-0: #111110; --surface-1: #1a1a19; --border: #2e2d2b;
+    --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #8f8e88;
+    --series-1: #3987e5; --series-2: #d95926; --grid: #2a2a28; --accent: #3987e5;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--surface-0); color: var(--text-primary);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; font-weight: 600; }
+  h2 { font-size: 15px; margin: 0 0 12px; font-weight: 600; }
+  .sub { color: var(--text-secondary); margin: 0 0 20px; }
+  .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 16px 24px; align-items: end; margin-bottom: 16px; }
+  .control label { display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
+  .control input[type=number] { width: 96px; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border);
+         background: var(--surface-0); color: var(--text-primary); font: inherit; }
+  .control input[type=range] { width: 220px; accent-color: var(--accent); }
+  .cap-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .presets button { font: inherit; font-size: 12px; padding: 4px 10px; margin-right: 4px; border-radius: 999px;
+         border: 1px solid var(--border); background: var(--surface-0); color: var(--text-secondary); cursor: pointer; }
+  .presets button.on { border-color: var(--accent); color: var(--text-primary); }
+  .override { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
+  .override[aria-disabled=true] .control input { opacity: .5; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .tile .k { font-size: 12px; color: var(--text-secondary); }
+  .tile .v { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .tile .n { font-size: 12px; color: var(--text-muted); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+  .grid2 > * { min-width: 0; }
+  @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } .control input[type=range] { width: 100%; } .control { flex: 1 1 100%; } }
+  .chart { position: relative; height: 320px; }
+  .chart.small { height: 240px; }
+  .verdict ul { margin: 0; padding-left: 18px; }
+  .verdict li { margin: 4px 0; }
+  .note { font-size: 12px; color: var(--text-muted); margin-top: 8px; }
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 6px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { font-weight: 600; color: var(--text-secondary); font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Should I add another battery module?</h1>
+  <p class="sub" id="subtitle"></p>
+
+  <div class="card controls">
+    <div class="control">
+      <label for="cap">Extra capacity: <span class="cap-value" id="capLabel"></span></label>
+      <input id="cap" type="range" min="0" max="20" step="0.5">
+      <div class="presets" id="presets"></div>
+    </div>
+    <div class="control"><label for="cost">Cost per module (£)</label><input id="cost" type="number" min="0" step="50"></div>
+    <div class="control"><label for="modkwh">kWh per module</label><input id="modkwh" type="number" min="0.5" step="0.1"></div>
+    <div class="control"><label for="eff">Round-trip efficiency (%)</label><input id="eff" type="number" min="50" max="100" step="1"></div>
+    <div class="control">
+      <label><input id="ovr" type="checkbox"> Try different rates (p/kWh)</label>
+      <div class="override" id="ovrBox" aria-disabled="true">
+        <div class="control"><label for="rPeak">Peak</label><input id="rPeak" type="number" step="0.1" disabled></div>
+        <div class="control"><label for="rOff">Off-peak</label><input id="rOff" type="number" step="0.1" disabled></div>
+        <div class="control"><label for="rExp">Export</label><input id="rExp" type="number" step="0.1" disabled></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="tiles">
+    <div class="card tile"><div class="k">Saving per year</div><div class="v" id="tSave"></div><div class="n" id="tSaveN"></div></div>
+    <div class="card tile"><div class="k">Installed cost</div><div class="v" id="tCost"></div><div class="n" id="tCostN"></div></div>
+    <div class="card tile"><div class="k">Simple payback</div><div class="v" id="tPay"></div><div class="n" id="tPayN"></div></div>
+    <div class="card tile"><div class="k">Extra capacity fully used</div><div class="v" id="tFull"></div><div class="n">share of days</div></div>
+    <div class="card tile"><div class="k">Peak import above 6 kW</div><div class="v" id="tCap"></div><div class="n" id="tCapN"></div></div>
+  </div>
+
+  <div class="card">
+    <h2>Daily peak-time import vs extra capacity</h2>
+    <div class="chart"><canvas id="cDaily" role="img" aria-label="Daily peak-time import with the selected extra capacity as a line"></canvas></div>
+    <p class="note">Blue is peak import within the inverter's power limit, which a bigger battery could cover. Orange came while drawing more than the limit, so no battery size helps. The dashed line is the extra capacity selected above.</p>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <h2>£ saved per month at the selected capacity</h2>
+      <div class="chart small"><canvas id="cMonth" role="img" aria-label="Monthly saving"></canvas></div>
+    </div>
+    <div class="card">
+      <h2>Annual saving by extra capacity</h2>
+      <div class="chart small"><canvas id="cCurve" role="img" aria-label="Annual saving against extra capacity"></canvas></div>
+      <p class="note">Steps flatten once the battery covers your typical peak shortfall. Each extra kWh is then used on fewer days.</p>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="card verdict">
+      <h2>Verdict (from the last run)</h2>
+      <ul id="verdict"></ul>
+    </div>
+    <div class="card">
+      <h2>Monthly detail at the selected capacity</h2>
+      <div class="table-wrap"><table id="tbl"></table></div>
+    </div>
+  </div>
+  <p class="note">Generated by run.py from your Octopus half-hourly data. Savings are an upper bound: grid data can't show when the existing battery was already discharging at full power.</p>
+</main>
+
+<script>
+const DATA = __DATA__;
+
+const $ = id => document.getElementById(id);
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const gbp = v => "£" + Math.round(v).toLocaleString("en-GB");
+const days = DATA.days;
+const scale = 365 / days.length;
+const monthName = m => new Date(m + "-01T12:00:00").toLocaleString("en-GB", { month: "short", year: "2-digit" });
+const avg = k => days.reduce((a, d) => a + d[k], 0) / days.length;
+
+// Inputs start at the values used in the run.
+$("cap").value = DATA.cfg.scenarios[0];
+$("cost").value = DATA.cfg.module_cost;
+$("modkwh").value = DATA.cfg.module_kwh;
+$("eff").value = Math.round(DATA.cfg.eff * 100);
+$("rPeak").value = avg("pr").toFixed(1);
+$("rOff").value = avg("opr").toFixed(1);
+$("rExp").value = avg("er").toFixed(1);
+$("subtitle").textContent = `${DATA.tariff} · off-peak ${DATA.windows.join(", ") || "n/a"} · ` +
+  `${DATA.first} to ${DATA.last} (${days.length} days) · existing battery ${DATA.cfg.existing_kwh} kWh, ${DATA.cfg.inverter_kw} kW`;
+DATA.verdict.forEach(t => { const li = document.createElement("li"); li.textContent = t; $("verdict").appendChild(li); });
+DATA.cfg.scenarios.forEach(s => {
+  const b = document.createElement("button"); b.textContent = `+${s} kWh`; b.dataset.v = s;
+  b.onclick = () => { $("cap").value = s; update(); }; $("presets").appendChild(b);
+});
+
+function params() {
+  const ovr = $("ovr").checked;
+  return {
+    eff: Math.min(Math.max(+$("eff").value / 100, 0.5), 1),
+    cost: +$("cost").value, modkwh: Math.max(+$("modkwh").value, 0.1),
+    rates: ovr ? { pr: +$("rPeak").value, opr: +$("rOff").value, er: +$("rExp").value } : null,
+  };
+}
+
+// Same model as battery/analyse.py: shift = min(capacity, power-limited peak import),
+// charged from whichever of off-peak grid or exported solar is worth more.
+function simulate(cap, p) {
+  const { existing_kwh, inverter_kw } = DATA.cfg;
+  return days.map(d => {
+    const pr = p.rates ? p.rates.pr : d.pr, opr = p.rates ? p.rates.opr : d.opr, er = p.rates ? p.rates.er : d.er;
+    const vg = Math.max(pr - opr / p.eff, 0), vs = Math.max(pr - er / p.eff, 0);
+    const gridRoom = Math.max(inverter_kw * d.oh - existing_kwh, 0) * p.eff;
+    const solarRoom = d.ex * p.eff;
+    const shift = Math.min(d.sh, cap);
+    let g, s;
+    if (vs > vg) { s = Math.min(shift, solarRoom); g = Math.min(shift - s, gridRoom); }
+    else { g = Math.min(shift, gridRoom); s = Math.min(shift - g, solarRoom); }
+    return { d: d.d, shifted: g + s, saving: (g * vg + s * vs) / 100, full: d.sh >= cap && cap > 0 };
+  });
+}
+
+function summarise(cap, p) {
+  const sim = simulate(cap, p);
+  const saving = sim.reduce((a, r) => a + r.saving, 0) * scale;
+  const shifted = sim.reduce((a, r) => a + r.shifted, 0) * scale;
+  const modules = cap > 0 ? Math.ceil(cap / p.modkwh - 1e-9) : 0;
+  const cost = modules * p.cost;
+  return { sim, saving, shifted, modules, cost, payback: saving > 0 ? cost / saving : Infinity,
+           full: sim.filter(r => r.full).length / sim.length };
+}
+
+const charts = {};
+function baseOptions() {
+  const ink2 = css("--text-secondary"), grid = css("--grid");
+  return {
+    responsive: true, maintainAspectRatio: false, animation: false,
+    interaction: { mode: "index", intersect: false },
+    plugins: {
+      legend: { position: "top", align: "start", labels: { color: ink2, boxWidth: 12, boxHeight: 12, useBorderRadius: true, borderRadius: 2 } },
+      tooltip: { backgroundColor: css("--surface-1"), titleColor: css("--text-primary"), bodyColor: ink2,
+                 borderColor: css("--border"), borderWidth: 1, padding: 10, usePointStyle: true },
+    },
+    scales: {
+      x: { ticks: { color: ink2, maxRotation: 0, autoSkip: true }, grid: { display: false }, border: { color: css("--text-muted") } },
+      y: { beginAtZero: true, ticks: { color: ink2 }, grid: { color: grid }, border: { display: false } },
+    },
+  };
+}
+
+function buildCharts() {
+  Object.values(charts).forEach(c => c.destroy());
+  const blue = css("--series-1"), orange = css("--series-2"), ink2 = css("--text-secondary");
+
+  const daily = baseOptions();
+  daily.scales.x.stacked = true; daily.scales.y.stacked = true;
+  daily.scales.y.title = { display: true, text: "kWh per day", color: ink2 };
+  daily.scales.x.ticks.callback = function (v) {
+    const lab = this.getLabelForValue(v);
+    if (!lab.endsWith("-01")) return null;
+    const every = this.chart.width < 600 ? 3 : 1;  // fewer month labels on a phone
+    return (+lab.slice(5, 7) - 1) % every === 0 ? monthName(lab.slice(0, 7)) : null;
+  };
+  daily.scales.x.ticks.autoSkip = false;
+  daily.plugins.tooltip.callbacks = {
+    title: items => new Date(items[0].label + "T12:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" }),
+    label: c => `${c.dataset.label}: ${c.parsed.y.toFixed(1)} kWh`,
+  };
+  charts.daily = new Chart($("cDaily"), {
+    data: {
+      labels: days.map(d => d.d),
+      datasets: [
+        { type: "bar", label: `Within ${DATA.cfg.inverter_kw} kW`, data: days.map(d => d.sh), backgroundColor: blue, barPercentage: 1, categoryPercentage: 0.85, stack: "s" },
+        { type: "bar", label: `Above ${DATA.cfg.inverter_kw} kW (power-capped)`, data: days.map(d => d.oc), backgroundColor: orange, barPercentage: 1, categoryPercentage: 0.85, stack: "s" },
+        { type: "line", label: "Extra capacity", data: [], borderColor: ink2, borderWidth: 2, borderDash: [5, 4], pointRadius: 0, stack: "line" },
+      ],
+    },
+    options: daily,
+  });
+
+  const month = baseOptions();
+  month.plugins.legend.display = false;
+  month.plugins.tooltip.callbacks = { label: c => `Saved: £${c.parsed.y.toFixed(2)}` };
+  month.scales.y.ticks.callback = v => "£" + v;
+  charts.month = new Chart($("cMonth"), {
+    type: "bar", data: { labels: [], datasets: [{ data: [], backgroundColor: blue, borderRadius: 4, maxBarThickness: 36 }] }, options: month,
+  });
+
+  const curve = baseOptions();
+  curve.plugins.legend.display = false;
+  curve.scales.x.type = "linear"; curve.scales.x.min = 0; curve.scales.x.max = 20;
+  curve.scales.x.title = { display: true, text: "Extra capacity (kWh)", color: ink2 };
+  curve.scales.y.ticks.callback = v => "£" + v;
+  curve.plugins.tooltip.callbacks = { title: i => `+${i[0].parsed.x} kWh`, label: c => c.datasetIndex === 0 ? `Saving: ${gbp(c.parsed.y)}/yr` : "Selected" };
+  charts.curve = new Chart($("cCurve"), {
+    type: "line",
+    data: { datasets: [
+      { data: [], borderColor: blue, borderWidth: 2, pointRadius: 0, pointHitRadius: 8, tension: 0 },
+      { data: [], borderColor: blue, backgroundColor: css("--surface-1"), borderWidth: 2, pointRadius: 6, showLine: false },
+    ] },
+    options: curve,
+  });
+}
+
+function update() {
+  const cap = +$("cap").value, p = params();
+  $("capLabel").textContent = `+${cap} kWh`;
+  document.querySelectorAll("#presets button").forEach(b => b.classList.toggle("on", +b.dataset.v === cap));
+  const r = summarise(cap, p);
+
+  $("tSave").textContent = gbp(r.saving);
+  $("tSaveN").textContent = `${Math.round(r.shifted).toLocaleString("en-GB")} kWh moved off peak`;
+  $("tCost").textContent = gbp(r.cost);
+  $("tCostN").textContent = `${r.modules} module${r.modules === 1 ? "" : "s"} × ${gbp(p.cost)}`;
+  $("tPay").textContent = isFinite(r.payback) ? `${r.payback.toFixed(1)} yrs` : "never";
+  $("tPayN").textContent = !isFinite(r.payback) ? "" : r.payback <= 7 ? "worth it" : r.payback <= 10 ? "borderline" : "not worth it on savings alone";
+  $("tFull").textContent = `${Math.round(r.full * 100)}%`;
+  const peakTotal = days.reduce((a, d) => a + d.pi, 0), over = days.reduce((a, d) => a + d.oc, 0);
+  $("tCap").textContent = `${peakTotal ? Math.round(over / peakTotal * 100) : 0}%`;
+  $("tCapN").textContent = `${Math.round(over * scale)} kWh/yr no battery can cover`;
+
+  charts.daily.data.datasets[2].data = days.map(() => cap);
+  charts.daily.update();
+
+  const byMonth = {};
+  r.sim.forEach(x => { const m = x.d.slice(0, 7); (byMonth[m] ||= { saving: 0, shifted: 0, n: 0 }); byMonth[m].saving += x.saving; byMonth[m].shifted += x.shifted; byMonth[m].n++; });
+  const months = Object.keys(byMonth).sort();
+  charts.month.data.labels = months.map(monthName);
+  charts.month.data.datasets[0].data = months.map(m => byMonth[m].saving);
+  charts.month.update();
+
+  const pts = [];
+  for (let c = 0; c <= 20; c += 0.5) pts.push({ x: c, y: summarise(c, p).saving });
+  charts.curve.data.datasets[0].data = pts;
+  charts.curve.data.datasets[1].data = [{ x: cap, y: r.saving }];
+  charts.curve.update();
+
+  const dm = {};
+  days.forEach(d => { const m = d.d.slice(0, 7); (dm[m] ||= { pi: 0, ex: 0, n: 0 }); dm[m].pi += d.pi; dm[m].ex += d.ex; dm[m].n++; });
+  let html = "<thead><tr><th>Month</th><th>Peak import/day</th><th>Export/day</th><th>kWh shifted</th><th>Saved</th></tr></thead><tbody>";
+  months.forEach(m => {
+    html += `<tr><td>${monthName(m)}</td><td>${(dm[m].pi / dm[m].n).toFixed(1)}</td><td>${(dm[m].ex / dm[m].n).toFixed(1)}</td>` +
+            `<td>${Math.round(byMonth[m].shifted)}</td><td>£${byMonth[m].saving.toFixed(2)}</td></tr>`;
+  });
+  $("tbl").innerHTML = html + "</tbody>";
+}
+
+$("ovr").onchange = () => {
+  const on = $("ovr").checked;
+  $("ovrBox").setAttribute("aria-disabled", String(!on));
+  ["rPeak", "rOff", "rExp"].forEach(id => $(id).disabled = !on);
+  update();
+};
+["cap", "cost", "modkwh", "eff", "rPeak", "rOff", "rExp"].forEach(id => $(id).addEventListener("input", update));
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { buildCharts(); update(); });
+
+buildCharts();
+update();
+</script>
+</body>
+</html>

@@ -1,5 +1,8 @@
 """Verdict text, chart and files written to output/."""
 
+import json
+from pathlib import Path
+
 import matplotlib
 
 matplotlib.use("Agg")
@@ -79,7 +82,7 @@ def verdict(sim, annual, cfg, value_grid, value_solar):
         )
 
     lines.append(
-        f"Each kWh shifted is worth {value_grid:.1f}p if grid-charged off-peak, "
+        f"On average each kWh shifted is worth {value_grid:.1f}p if grid-charged off-peak, "
         f"{value_solar:.1f}p if charged from solar you'd otherwise export."
     )
     return lines
@@ -101,7 +104,7 @@ def chart(sim, cfg, path):
         ax.annotate(f"+{kwh} kWh", xy=(days[-1], kwh), xytext=(6, 0), textcoords="offset points",
                     va="center", fontsize=9, color=INK_2, annotation_clip=False)
 
-    ax.set_title(f"Daily peak-time import — {cfg['tariff']['name']}", loc="left", color=INK, fontsize=13, pad=28)
+    ax.set_title(f"Daily peak-time import — {tariff_name(cfg)}", loc="left", color=INK, fontsize=13, pad=28)
     ax.set_ylabel("kWh per day", color=INK_2)
     ax.margins(x=0.01)
     ax.grid(axis="y", color=GRID, linewidth=0.8)
@@ -117,13 +120,15 @@ def chart(sim, cfg, path):
     plt.close(fig)
 
 
-def format_summary(monthly, annual, verdict_lines, cfg, sim):
-    t = cfg["tariff"]
+def tariff_name(cfg):
+    return cfg["tariff"].get("name") or "rates from your Octopus account"
+
+
+def format_summary(monthly, annual, verdict_lines, cfg, sim, windows):
     scen = cfg["battery"]["scenarios_kwh"]
-    windows = ", ".join(f"{a}–{b}" for a, b in t["offpeak_windows"])
     out = [
-        f"Tariff: {t['name']}  |  off-peak {windows} @ {t['offpeak_rate_p']}p  |  "
-        f"peak {t['peak_rate_p']}p  |  export {t['export_rate_p']}p",
+        f"Tariff: {tariff_name(cfg)}  |  off-peak {', '.join(windows)} @ avg {sim['offpeak_rate_p'].mean():.1f}p  |  "
+        f"peak avg {sim['peak_rate_p'].mean():.1f}p  |  export avg {sim['export_rate_p'].mean():.1f}p",
         f"Data: {sim.index.min():%d %b %Y} to {sim.index.max():%d %b %Y} ({len(sim)} days)",
         "",
         "MONTHLY (averages per day; shifted kWh and £ are monthly totals)",
@@ -147,3 +152,45 @@ def format_summary(monthly, annual, verdict_lines, cfg, sim):
     out.append(a.to_string())
     out += ["", "VERDICT"] + [f"- {line}" for line in verdict_lines]
     return "\n".join(out)
+
+
+def dashboard(sim, annual, verdict_lines, cfg, windows, path):
+    """Write a self-contained interactive dashboard with the daily data embedded."""
+    b = cfg["battery"]
+    days = [
+        {
+            "d": f"{day:%Y-%m-%d}",
+            "pi": round(r.peak_import_kwh, 3),
+            "sh": round(r.peak_shiftable_kwh, 3),
+            "oc": round(r.peak_over_cap_kwh, 3),
+            "ex": round(r.export_kwh, 3),
+            "oh": r.offpeak_hours,
+            "pr": round(r.peak_rate_p, 3),
+            "opr": round(r.offpeak_rate_p, 3),
+            "er": round(r.export_rate_p, 3),
+        }
+        for day, r in sim.iterrows()
+    ]
+    data = {
+        "tariff": tariff_name(cfg),
+        "windows": windows,
+        "first": f"{sim.index.min():%d %b %Y}",
+        "last": f"{sim.index.max():%d %b %Y}",
+        "verdict": verdict_lines,
+        "days": days,
+        "cfg": {
+            "existing_kwh": b["existing_kwh"],
+            "inverter_kw": b["inverter_kw"],
+            "eff": b["round_trip_efficiency"],
+            "module_kwh": b["module_kwh"],
+            "module_cost": b["module_cost_gbp"],
+            "scenarios": b["scenarios_kwh"],
+        },
+    }
+    here = Path(__file__).parent
+    template = (here / "dashboard.html").read_text()
+    # Chart.js is inlined so the file works offline and never loads anything external.
+    chartjs = (here / "vendor" / "chart.umd.min.js").read_text()
+    payload = json.dumps(data).replace("</", "<\\/")
+    html = template.replace("/*CHARTJS*/", chartjs).replace("__DATA__", payload)
+    path.write_text(html)
