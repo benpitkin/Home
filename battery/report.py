@@ -91,36 +91,38 @@ def verdict(sim, annual, cfg, value_grid, value_solar):
 
 
 def battery_lines(sim, cfg, value_grid):
-    """Verdict lines that need Sigen battery history."""
+    """Verdict lines that need Sigen battery history, from the days it covers."""
     b = cfg["battery"]
-    peak_total = sim["peak_import_kwh"].sum()
-    shift = sim["peak_shiftable_kwh"].sum()
-    charged = sim["peak_while_charged_kwh"].sum()
-    covered = sim["battery_halfhours"].sum() / sim["halfhours"].sum()
+    days = sim[sim["battery_halfhours"] >= 0.8 * sim["halfhours"]]
+    if days.empty:
+        return []
+    peak_total = days["peak_import_kwh"].sum()
+    shift = days["peak_shiftable_kwh"].sum()
+    charged = days["peak_while_charged_kwh"].sum()
     lines = [
-        f"Sigen battery data ({covered:.0%} of half-hours): of {peak_total:,.0f} kWh peak import, "
-        f"{shift:,.0f} kWh came while the battery was empty. That is the only part a bigger battery can fix. "
-        f"{charged:,.0f} kWh came while it still had charge (inverter at its {b['inverter_kw']:g} kW limit, "
-        "the reserve, or a load the battery doesn't feed such as the car)."
+        f"Sigen battery data for {len(days)} days (those with the most peak import): of {peak_total:,.0f} kWh "
+        f"peak import, {shift:,.0f} kWh ({shift / peak_total:.0%}) came while the battery was empty, the part a "
+        f"bigger battery can fix. {charged:,.0f} kWh came while it still had charge (inverter at its "
+        f"{b['inverter_kw']:g} kW limit, the reserve, or a load the battery doesn't feed such as the car)."
     ]
-    soc = sim["morning_soc_pct"].dropna() if "morning_soc_pct" in sim else pd.Series(dtype=float)
-    winter = soc[soc.index.month.isin([11, 12, 1, 2])]
-    if len(winter) >= 14:
+    soc = days["morning_soc_pct"].dropna() if "morning_soc_pct" in days else pd.Series(dtype=float)
+    winter = soc[soc.index.month.isin([11, 12, 1, 2, 3])]
+    if len(winter) >= 5:
         full = (winter >= 95).mean()
-        # Energy the existing battery left unfilled overnight that the day then imported at peak.
-        gap = ((100 - soc).clip(lower=0) / 100 * b["existing_kwh"]).reindex(sim.index).fillna(0.0)
-        free = pd.concat([gap, sim["peak_shiftable_kwh"]], axis=1).min(axis=1)
-        free_gbp = (free * sim["value_grid_p"]).sum() / 100 * 365 / len(sim)
+        gap = ((100 - winter).clip(lower=0) / 100 * b["existing_kwh"])
+        free = pd.concat([gap, days["peak_shiftable_kwh"].reindex(winter.index)], axis=1).min(axis=1)
+        free_kwh_day = free.mean()
         if full < 0.8:
             lines.append(
                 f"Your battery is NOT filling overnight: it ended the off-peak window at 95%+ on only {full:.0%} "
-                f"of winter days (median {winter.median():.0f}%). Charging it fully could save about "
-                f"£{free_gbp:,.0f}/yr for free. Fix the charge settings in mySigen before buying a module."
+                f"of {len(winter)} winter days checked (median {winter.median():.0f}%), leaving about "
+                f"{free_kwh_day:.1f} kWh a day unfilled. Fix the charge settings in mySigen before buying a module."
             )
         else:
             lines.append(
-                f"Overnight charging is fine: the battery ended the off-peak window at 95%+ on {full:.0%} "
-                f"of winter days, so the winter shortfall is a genuine capacity limit."
+                f"Overnight charging is fine: the battery ended the off-peak window at 95%+ on "
+                f"{(winter >= 95).sum()} of {len(winter)} winter days checked, so the winter shortfall is a "
+                "genuine capacity limit."
             )
     return lines
 

@@ -139,7 +139,8 @@ def fetch(days, cache_dir, out_path, pause=PAUSE):
                 data = client.history(code, day)
                 break
             except (_RateLimited, _ApiError) as e:
-                if isinstance(e, _ApiError) and e.code != 1201:
+                # 1201 is the rate limit; 1001 "rpc fail" is a transient server error.
+                if isinstance(e, _ApiError) and e.code not in (1001, 1201):
                     raise
                 time.sleep(pause)
         else:
