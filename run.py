@@ -20,12 +20,25 @@ SIGEN_CACHE = ROOT / "data" / "sigen"
 OUT = ROOT / "output"
 
 
-def add_battery_data(hh, fetch_new):
+def sigen_days(hh, cfg):
+    """Calendar days worth fetching from Sigen, biggest peak-time import first.
+
+    Sigen allows one history request every 5 minutes, and battery state only changes
+    the answer on days with peak import, so the rest are skipped.
+    """
+    tagged = analyse.tag_halfhours(hh, cfg)
+    peak = tagged["import_kwh"].where(~tagged["is_offpeak"], 0.0)
+    by_day = peak.groupby(tagged.index.tz_localize(None).normalize()).sum()
+    by_day = by_day[by_day > 0.2].sort_values(ascending=False)
+    return [f"{d:%Y-%m-%d}" for d in by_day.index]
+
+
+def add_battery_data(hh, cfg, fetch_new, max_days=0):
     """Join Sigen battery history if a login is configured or a saved copy exists."""
     load_dotenv()
     if fetch_new and (os.getenv("SIGEN_USERNAME") or os.getenv("SIGEN_APP_KEY")):
-        days = sorted({f"{d:%Y-%m-%d}" for d in hh.index.tz_localize(None).normalize()})
-        sig = sigen.fetch(days, SIGEN_CACHE, SIGEN_DATA)
+        days = sigen_days(hh, cfg)
+        sig = sigen.fetch(days[:max_days] if max_days else days, SIGEN_CACHE, SIGEN_DATA)
     elif SIGEN_DATA.exists():
         sig = sigen.load(SIGEN_DATA)
     else:
@@ -48,6 +61,9 @@ def add_battery_data(hh, fetch_new):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--no-fetch", action="store_true", help="use the saved CSV instead of calling the API")
+    parser.add_argument("--sigen-days", type=int, default=0,
+                        help="only fetch this many Sigen days (biggest peak import first); 0 = all that matter")
+    parser.add_argument("--no-sigen", action="store_true", help="don't download Sigen history (use any saved copy)")
     parser.add_argument("--config", default=ROOT / "config.toml", type=Path)
     args = parser.parse_args()
 
@@ -63,7 +79,8 @@ def main():
         hh = fetch.fetch(DATA, months=cfg["analysis"]["months"])
 
     analyse.check_config(cfg, hh)
-    hh = add_battery_data(hh, fetch_new=not args.no_fetch)
+    hh = add_battery_data(hh, cfg, fetch_new=not args.no_fetch and not args.no_sigen,
+                          max_days=args.sigen_days)
     hh = analyse.tag_halfhours(hh, cfg)
     daily = analyse.daily_totals(hh, cfg)
     # Drop part days at either end (e.g. a cycle that starts at 23:30 on the last day).

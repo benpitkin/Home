@@ -146,7 +146,7 @@ def daily_totals(hh, cfg):
 
 
 def has_battery_data(hh):
-    return "soc_min_pct" in hh and hh["soc_min_pct"].notna().mean() > 0.2
+    return "soc_min_pct" in hh and hh["soc_min_pct"].notna().any()
 
 
 def battery_reserve(hh):

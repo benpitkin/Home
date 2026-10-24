@@ -109,8 +109,16 @@ class SigenClient:
         return data
 
 
-def fetch(days, cache_dir, out_path, pause=1.0):
-    """Download each day's 5-minute history, caching one JSON file per day so reruns resume."""
+# The history endpoint allows one request per system every 5 minutes; Sigen answers
+# faster requests with error 1201 "Access restriction".
+PAUSE = 305
+
+
+def fetch(days, cache_dir, out_path, pause=PAUSE):
+    """Download each day's 5-minute history, caching one JSON file per day so reruns resume.
+
+    `days` is fetched in the order given, so put the days that matter most first.
+    """
     load_dotenv()
     user, pwd = os.getenv("SIGEN_USERNAME", "").strip(), os.getenv("SIGEN_PASSWORD", "")
     app_key, app_secret = os.getenv("SIGEN_APP_KEY", "").strip(), os.getenv("SIGEN_APP_SECRET", "").strip()
@@ -119,36 +127,28 @@ def fetch(days, cache_dir, out_path, pause=1.0):
         raise SystemExit("Set SIGEN_APP_KEY + SIGEN_APP_SECRET, or SIGEN_USERNAME + SIGEN_PASSWORD, to fetch Sigen data.")
     client = SigenClient(user, pwd, os.getenv("SIGEN_REGION", "eu").strip() or "eu", app_key, app_secret)
     code = code or client.station_code()
-    print(f"Sigen station {code}: fetching {len(days)} days of 5-minute history ...")
 
     cache_dir.mkdir(parents=True, exist_ok=True)
-    fetched = skipped = 0
-    for day in days:
-        path = cache_dir / f"{day}.json"
-        if path.exists():
-            continue
-        for attempt in range(5):
+    todo = [d for d in days if not (cache_dir / f"{d}.json").exists()]
+    print(f"Sigen station {code}: {len(days) - len(todo)} of {len(days)} days already saved; "
+          f"{len(todo)} to fetch (~{len(todo) * pause / 3600:.1f} h at one request per {pause // 60} min). "
+          "Stop any time; the next run resumes.")
+    for n, day in enumerate(todo, 1):
+        for attempt in range(4):
             try:
                 data = client.history(code, day)
                 break
-            except _RateLimited:
-                wait = 60 * (attempt + 1)
-                print(f"  rate limited; waiting {wait}s ...")
-                time.sleep(wait)
-            except _ApiError as e:
-                if e.code == 1201:  # no access for this date, e.g. before installation
-                    data = {"itemList": []}
-                    skipped += 1
-                    break
-                raise
+            except (_RateLimited, _ApiError) as e:
+                if isinstance(e, _ApiError) and e.code != 1201:
+                    raise
+                time.sleep(pause)
         else:
-            raise SystemExit("Sigen kept rate-limiting; run again later and it will resume.")
-        path.write_text(json.dumps(data))
-        fetched += 1
-        if fetched % 25 == 0:
-            print(f"  {fetched} days fetched ...")
-        time.sleep(pause)
-    print(f"Sigen: {fetched} new day(s) fetched, {skipped} with no data.")
+            # Still refused after several spaced-out tries: genuinely unavailable for this date.
+            data = {"itemList": []}
+        (cache_dir / f"{day}.json").write_text(json.dumps(data))
+        print(f"  {n}/{len(todo)} {day}: {len(data['itemList'])} readings", flush=True)
+        if n < len(todo):
+            time.sleep(pause)
     return build_csv(cache_dir, out_path)
 
 
