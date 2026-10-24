@@ -27,6 +27,21 @@ Outputs go to `output/` (`dashboard.html`, `summary.txt`, `monthly_summary.csv`,
 `daily_analysis.csv`, `capped_halfhours.csv`, `daily_peak_import.png`). Raw data is saved to
 `data/octopus_halfhourly.csv`. `.env`, `data/` and `output/` are git-ignored.
 
+### Sigen battery data (optional)
+
+Set `SIGEN_USERNAME` and `SIGEN_PASSWORD` (your mySigen app login) in `.env` or the environment.
+`run.py` then downloads 5-minute battery history from Sigen Cloud into `data/sigen/`, one file per
+day, so a re-run resumes where it stopped. With it, the model:
+
+- counts only peak import made **while the battery was empty** as fixable by more capacity
+  (import while it still had charge is the power limit, the reserve, or a load it doesn't feed);
+- checks whether the battery is **full at the end of each off-peak window** in winter, and estimates
+  what fixing the charge settings would save before you spend anything.
+
+On each run it prints how well Sigen's grid import matches the Octopus meter, which catches unit
+or clock problems. The Sigen Cloud API is undocumented and was worked out from the app by the
+community, so it may change without notice.
+
 ## How the model works
 
 - **Time:** every half-hour is held in UK local time (Europe/London), so off-peak windows follow

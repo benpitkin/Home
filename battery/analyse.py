@@ -110,6 +110,23 @@ def daily_totals(hh, cfg):
         "halfhours": 1,
     })
     key = hh["battery_day"]
+
+    if has_battery_data(hh):
+        # With Sigen history, only peak import while the battery was empty can be fixed by
+        # more capacity, and only up to the power the inverter wasn't already delivering.
+        # Import while it still had charge was the power limit, the reserve, or a load the
+        # battery doesn't feed, so it stays in peak_over_cap_kwh-style "not fixable" import.
+        reserve = battery_reserve(hh)
+        empty = hh["soc_min_pct"] <= reserve
+        headroom = (cap_hh - hh["discharge_kwh"].fillna(0.0)).clip(lower=0.0)
+        known = hh["soc_min_pct"].notna()
+        sigen_shift = imp.clip(upper=headroom).where(peak & empty, 0.0)
+        parts["peak_shiftable_octopus_kwh"] = parts["peak_shiftable_kwh"]
+        parts["peak_shiftable_kwh"] = sigen_shift.where(known, parts["peak_shiftable_kwh"])
+        parts["peak_while_charged_kwh"] = imp.where(peak & known & ~empty, 0.0)
+        parts["peak_over_cap_kwh"] = (imp.where(peak, 0.0) - parts["peak_shiftable_kwh"]).clip(lower=0.0)
+        parts["battery_halfhours"] = known.astype(int)
+
     daily = parts.groupby(key).sum()
     # The day's rates. Peak is weighted by the import a battery could displace, so it
     # reflects the price actually avoided on tariffs with more than two rates.
@@ -120,8 +137,21 @@ def daily_totals(hh, cfg):
     daily["peak_rate_p"] = peak_weighted.fillna(peak_simple).fillna(r.groupby(key).max())
     daily["offpeak_rate_p"] = r.where(~peak).groupby(key).mean().fillna(r.groupby(key).min())
     daily["export_rate_p"] = hh["export_rate_p"].groupby(key).mean()
+    if has_battery_data(hh):
+        # Charge level when the off-peak window ends: is the battery filling up overnight?
+        last_offpeak = hh["is_offpeak"] & ~hh["is_offpeak"].shift(-1, fill_value=False)
+        daily["morning_soc_pct"] = hh["soc_end_pct"].where(last_offpeak).groupby(key).max()
     daily.index.name = "day"
     return daily
+
+
+def has_battery_data(hh):
+    return "soc_min_pct" in hh and hh["soc_min_pct"].notna().mean() > 0.2
+
+
+def battery_reserve(hh):
+    """Charge level treated as "empty": just above the lowest level the battery runs down to."""
+    return float(hh["soc_min_pct"].quantile(0.01)) + 3.0
 
 
 def simulate(daily, cfg):

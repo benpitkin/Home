@@ -5,14 +5,44 @@
 """
 
 import argparse
+import os
 import tomllib
 from pathlib import Path
 
-from battery import analyse, fetch, report
+from dotenv import load_dotenv
+
+from battery import analyse, fetch, report, sigen
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data" / "octopus_halfhourly.csv"
+SIGEN_DATA = ROOT / "data" / "sigen_5min.csv"
+SIGEN_CACHE = ROOT / "data" / "sigen"
 OUT = ROOT / "output"
+
+
+def add_battery_data(hh, fetch_new):
+    """Join Sigen battery history if a login is configured or a saved copy exists."""
+    load_dotenv()
+    if fetch_new and os.getenv("SIGEN_USERNAME"):
+        days = sorted({f"{d:%Y-%m-%d}" for d in hh.index.tz_localize(None).normalize()})
+        sig = sigen.fetch(days, SIGEN_CACHE, SIGEN_DATA)
+    elif SIGEN_DATA.exists():
+        sig = sigen.load(SIGEN_DATA)
+    else:
+        return hh
+
+    batt = sigen.to_halfhours(sig, hh.index)
+    out = hh.join(batt)
+    ratio, corr = sigen.check_alignment(out)
+    if ratio is not None and ratio < 0.01:  # Sigen reported watts, not kilowatts
+        for col in ("discharge_kwh", "sigen_from_grid_kwh"):
+            out[col] /= 1000
+        ratio, corr = sigen.check_alignment(out)
+    if ratio is not None:
+        print(f"Sigen vs Octopus grid import: ratio {ratio:.2f}, correlation {corr:.2f} (expect both near 1)")
+        if corr < 0.7:
+            print("  Warning: Sigen data doesn't line up well with the meter; battery-based results may be off.")
+    return out
 
 
 def main():
@@ -33,6 +63,7 @@ def main():
         hh = fetch.fetch(DATA, months=cfg["analysis"]["months"])
 
     analyse.check_config(cfg, hh)
+    hh = add_battery_data(hh, fetch_new=not args.no_fetch)
     hh = analyse.tag_halfhours(hh, cfg)
     daily = analyse.daily_totals(hh, cfg)
     # Drop part days at either end (e.g. a cycle that starts at 23:30 on the last day).
