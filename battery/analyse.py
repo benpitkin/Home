@@ -165,6 +165,9 @@ def simulate(daily, cfg):
     # so both sources are divided by efficiency.
     value_grid = (peak - offpeak / eff).clip(lower=0.0)
     value_solar = (peak - export / eff).clip(lower=0.0)
+    # Margin on a kWh bought off-peak and exported later.
+    value_trade = (export - offpeak / eff).clip(lower=0.0)
+    trading = b.get("export_trading", False)
     solar_first = value_solar > value_grid
 
     # Energy the inverter can put into the extra capacity off-peak, after recharging
@@ -176,6 +179,7 @@ def simulate(daily, cfg):
     out = daily.copy()
     out["value_grid_p"] = value_grid
     out["value_solar_p"] = value_solar
+    out["value_trade_p"] = value_trade
     for kwh in b["scenarios_kwh"]:
         shift = daily["peak_shiftable_kwh"].clip(upper=kwh)
         g1 = pd.concat([shift, grid_room], axis=1).min(axis=1)
@@ -187,7 +191,16 @@ def simulate(daily, cfg):
         out[f"grid_shift_{kwh}"] = grid
         out[f"solar_shift_{kwh}"] = solar
         out[f"shifted_{kwh}"] = grid + solar
-        out[f"saving_gbp_{kwh}"] = (grid * value_grid + solar * value_solar) / 100
+        home_gbp = (grid * value_grid + solar * value_solar) / 100
+        # Trading: capacity the house didn't need that day is filled off-peak and exported
+        # during the peak window, limited by what 6 kW can still charge off-peak.
+        spare = (kwh - out[f"shifted_{kwh}"]).clip(lower=0.0)
+        spare = pd.concat([spare, grid_room - grid], axis=1).min(axis=1).clip(lower=0.0)
+        trade_gbp = spare * value_trade / 100
+        out[f"home_gbp_{kwh}"] = home_gbp
+        out[f"traded_{kwh}"] = spare if trading else 0.0
+        out[f"trade_gbp_{kwh}"] = trade_gbp if trading else 0.0
+        out[f"saving_gbp_{kwh}"] = home_gbp + out[f"trade_gbp_{kwh}"]
     # Import-weighted average values, for the report.
     w = daily["peak_shiftable_kwh"].where(daily["peak_shiftable_kwh"] > 0, 1e-9)
     return out, float((value_grid * w).sum() / w.sum()), float((value_solar * w).sum() / w.sum())
@@ -229,6 +242,9 @@ def annual_results(sim, cfg):
             "modules": modules,
             "cost_gbp": cost,
             "annual_shifted_kwh": shifted,
+            "annual_home_gbp": sim[f"home_gbp_{kwh}"].sum() * scale,
+            "annual_traded_kwh": sim[f"traded_{kwh}"].sum() * scale,
+            "annual_trade_gbp": sim[f"trade_gbp_{kwh}"].sum() * scale,
             "annual_saving_gbp": saving,
             "payback_years": cost / saving if saving > 0 else float("inf"),
             "days_capacity_fully_used_pct": 100 * full_days,

@@ -16,6 +16,9 @@ round_trip_efficiency = 0.9
 module_kwh = 5.0           # capacity added per extra module
 module_cost_gbp = 0.0      # FILL IN, installed cost of one extra module
 scenarios_kwh = [5, 8, 10]
+# Also fill spare extra capacity off-peak and export it in the peak window.
+# Check your tariff allows exporting grid-charged battery energy before relying on this.
+export_trading = true
 
 [analysis]
 months = 12

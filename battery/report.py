@@ -43,6 +43,13 @@ def verdict(sim, annual, cfg, value_grid, value_solar):
             f"£{best_row['cost_gbp']:,.0f}): about £{best_row['annual_saving_gbp']:,.0f} a year, "
             f"paying back in {yrs:.1f} years."
         )
+    if b.get("export_trading") and best_row["annual_trade_gbp"] > 0:
+        lines.append(
+            f"That includes trading: £{best_row['annual_home_gbp']:,.0f}/yr from covering your own peak use and "
+            f"£{best_row['annual_trade_gbp']:,.0f}/yr from filling the spare capacity off-peak and exporting "
+            f"{best_row['annual_traded_kwh']:,.0f} kWh. Check your tariff allows exporting grid-charged battery "
+            "energy; without trading the saving is the first figure only."
+        )
 
     # Is more capacity than the first module worth it?
     first = annual.iloc[0]
@@ -185,6 +192,9 @@ def format_summary(monthly, annual, verdict_lines, cfg, sim, windows):
     a["Modules"] = annual["modules"]
     a["Cost"] = annual["cost_gbp"].map("£{:,.0f}".format)
     a["kWh shifted/yr"] = annual["annual_shifted_kwh"].map("{:,.0f}".format)
+    if cfg["battery"].get("export_trading"):
+        a["Home/yr"] = annual["annual_home_gbp"].map("£{:,.0f}".format)
+        a["Trading/yr"] = annual["annual_trade_gbp"].map("£{:,.0f}".format)
     a["Saving/yr"] = annual["annual_saving_gbp"].map("£{:,.0f}".format)
     a["Payback"] = annual["payback_years"].map(lambda y: "never" if y == float("inf") else f"{y:.1f} yrs")
     a["Days full"] = annual["days_capacity_fully_used_pct"].map("{:.0f}%".format)
@@ -224,6 +234,7 @@ def dashboard(sim, annual, verdict_lines, cfg, windows, path):
             "module_kwh": b["module_kwh"],
             "module_cost": b["module_cost_gbp"],
             "scenarios": b["scenarios_kwh"],
+            "trading": bool(b.get("export_trading", False)),
         },
     }
     here = Path(__file__).parent

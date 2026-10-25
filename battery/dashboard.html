@@ -79,6 +79,7 @@
     <div class="control"><label for="modkwh">kWh per module</label><input id="modkwh" type="number" min="0.5" step="0.1"></div>
     <div class="control"><label for="eff">Round-trip efficiency (%)</label><input id="eff" type="number" min="50" max="100" step="1"></div>
     <div class="control">
+      <label><input id="trade" type="checkbox"> Trade spare capacity (charge off-peak, export at peak)</label>
       <label><input id="ovr" type="checkbox"> Try different rates (p/kWh)</label>
       <div class="override" id="ovrBox" aria-disabled="true">
         <div class="control"><label for="rPeak">Peak</label><input id="rPeak" type="number" step="0.1" disabled></div>
@@ -160,6 +161,7 @@ function params() {
     eff: Math.min(Math.max(+$("eff").value / 100, 0.5), 1),
     cost: +$("cost").value, modkwh: Math.max(+$("modkwh").value, 0.1),
     rates: ovr ? { pr: +$("rPeak").value, opr: +$("rOff").value, er: +$("rExp").value } : null,
+    trade: $("trade").checked,
   };
 }
 
@@ -176,7 +178,10 @@ function simulate(cap, p) {
     let g, s;
     if (vs > vg) { s = Math.min(shift, solarRoom); g = Math.min(shift - s, gridRoom); }
     else { g = Math.min(shift, gridRoom); s = Math.min(shift - g, solarRoom); }
-    return { d: d.d, shifted: g + s, saving: (g * vg + s * vs) / 100, full: d.sh >= cap && cap > 0 };
+    // Trading: fill what the house didn't need off-peak and export it in the peak window.
+    const spare = p.trade ? Math.max(Math.min(cap - g - s, gridRoom - g), 0) : 0;
+    const home = (g * vg + s * vs) / 100, trade = spare * Math.max(er - opr / p.eff, 0) / 100;
+    return { d: d.d, shifted: g + s, traded: spare, home, trade, saving: home + trade, full: d.sh >= cap && cap > 0 };
   });
 }
 
@@ -269,7 +274,10 @@ function update() {
   const r = summarise(cap, p);
 
   $("tSave").textContent = gbp(r.saving);
-  $("tSaveN").textContent = `${Math.round(r.shifted).toLocaleString("en-GB")} kWh moved off peak`;
+  const homeY = r.sim.reduce((a, x) => a + x.home, 0) * scale, tradeY = r.sim.reduce((a, x) => a + x.trade, 0) * scale;
+  $("tSaveN").textContent = p.trade
+    ? `${gbp(homeY)} home use + ${gbp(tradeY)} trading`
+    : `${Math.round(r.shifted).toLocaleString("en-GB")} kWh moved off peak`;
   $("tCost").textContent = gbp(r.cost);
   $("tCostN").textContent = `${r.modules} module${r.modules === 1 ? "" : "s"} × ${gbp(p.cost)}`;
   $("tPay").textContent = isFinite(r.payback) ? `${r.payback.toFixed(1)} yrs` : "never";
@@ -305,6 +313,8 @@ function update() {
   $("tbl").innerHTML = html + "</tbody>";
 }
 
+$("trade").checked = DATA.cfg.trading;
+$("trade").onchange = update;
 $("ovr").onchange = () => {
   const on = $("ovr").checked;
   $("ovrBox").setAttribute("aria-disabled", String(!on));
