@@ -22,4 +22,7 @@ export_trading = true
 
 [analysis]
 months = 12
-capped_halfhour_kwh = 3.0  # half-hour import above this (> 6 kW average) is flagged as power-capped
+capped_halfhour_kwh = 3.0
+# Price the whole year at the latest rates from your Octopus account (today's tariff)
+# instead of the rates actually charged at the time.
+price_at_latest_rates = true  # half-hour import above this (> 6 kW average) is flagged as power-capped

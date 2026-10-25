@@ -73,6 +73,15 @@ def tag_halfhours(df, cfg):
     else:
         out["export_rate_p"] = float(t["export_rate_p"])
 
+    if cfg["analysis"].get("price_at_latest_rates") and has_rates(df):
+        # Reprice every half-hour at the rates on the last day of data, so the year shows
+        # what the battery would earn on today's tariff rather than past prices.
+        rate = out["import_rate_p"]
+        peak_now = float(rate[~offpeak.values].iloc[-1])
+        off_now = float(rate[offpeak.values].iloc[-1])
+        out["import_rate_p"] = offpeak.map({True: off_now, False: peak_now}).astype(float).values
+        out["export_rate_p"] = float(out["export_rate_p"].iloc[-1])
+
     shift = pd.Timedelta(minutes=24 * 60 - first_start) if first_start >= 12 * 60 else pd.Timedelta(0)
     out["is_offpeak"] = offpeak.values
     out["battery_day"] = (local + shift).normalize()

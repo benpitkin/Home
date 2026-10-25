@@ -173,8 +173,9 @@ def tariff_name(cfg):
 def format_summary(monthly, annual, verdict_lines, cfg, sim, windows):
     scen = cfg["battery"]["scenarios_kwh"]
     out = [
-        f"Tariff: {tariff_name(cfg)}  |  off-peak {', '.join(windows)} @ avg {sim['offpeak_rate_p'].mean():.1f}p  |  "
-        f"peak avg {sim['peak_rate_p'].mean():.1f}p  |  export avg {sim['export_rate_p'].mean():.1f}p",
+        f"Tariff: {tariff_name(cfg)}{' (whole year priced at latest rates)' if cfg['analysis'].get('price_at_latest_rates') else ''}"
+        f"  |  off-peak {', '.join(windows)} @ {sim['offpeak_rate_p'].mean():.2f}p  |  "
+        f"peak {sim['peak_rate_p'].mean():.2f}p  |  export {sim['export_rate_p'].mean():.2f}p",
         f"Data: {sim.index.min():%d %b %Y} to {sim.index.max():%d %b %Y} ({len(sim)} days)",
         "",
         "MONTHLY (averages per day; shifted kWh and £ are monthly totals)",
