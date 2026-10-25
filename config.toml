@@ -13,9 +13,9 @@ export_rate_p = 0.0        # FILL IN, p/kWh
 existing_kwh = 10.76       # 2 x BAT 5.0
 inverter_kw = 6.0          # SigenStor EC 6.0 SP charge/discharge limit
 round_trip_efficiency = 0.9
-module_kwh = 5.0           # capacity added per extra module
-module_cost_gbp = 0.0      # FILL IN, installed cost of one extra module
-scenarios_kwh = [5, 8, 10]
+module_kwh = 6.0           # capacity added per extra module (BAT 6.0, the current module)
+module_cost_gbp = 2200.0   # BAT 6.0 ~£1,820-1,990 ex VAT at UK retailers (Oct 2026), 0% VAT, + ~£300 fitting (estimate)
+scenarios_kwh = [6, 12]   # one or two extra BAT 6.0 modules
 # Also fill spare extra capacity off-peak and export it in the peak window.
 # Check your tariff allows exporting grid-charged battery energy before relying on this.
 export_trading = true
